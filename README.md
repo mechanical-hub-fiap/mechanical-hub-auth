@@ -272,7 +272,7 @@ terraform plan
 terraform apply
 ```
 
-O workflow `.github/workflows/deploy.yml` faz o mesmo automaticamente no push para `main`, roda o smoke test (`scripts/smoke-test.sh`) e publica `api_base_url`, `login_url` e `webhook_url` no resumo da execução.
+O workflow `.github/workflows/deploy.yml` faz o mesmo, mas **não roda mais no push para `main`**: ele é chamado pela pipeline única (*Deploy completo*, em `mechanical-hub-infra`, como última etapa, depois de `database`) ou disparado manualmente em *Run workflow*. Ele roda o smoke test (`scripts/smoke-test.sh`) e publica `api_base_url`, `login_url` e `webhook_url` no resumo da execução.
 
 ### Ordem de deploy
 
