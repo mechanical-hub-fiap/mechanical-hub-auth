@@ -3,7 +3,8 @@ import type { Role } from './role.js';
 /**
  * Matriz de autorizacao rota x perfil.
  *
- * Espelha a SecurityConfiguration da aplicacao principal. Fica em codigo, e
+ * Espelha as rotas que o API Gateway encaminha aos servicos (orders, stock,
+ * billing, orchestrator) -- local.routes no Terraform. Fica em codigo, e
  * nao em configuracao de nuvem, justamente para ser testavel e portavel: a
  * mesma matriz vale independente de quem chama (API Gateway, Azure APIM,
  * um proxy proprio).
@@ -32,62 +33,49 @@ export const ACCESS_RULES: readonly AccessRule[] = [
     description: 'Emissao de token',
   },
   {
-    path: '/actuator/health/**',
-    methods: ['GET'],
-    allow: PUBLIC,
-    description: 'Healthcheck',
-  },
-  {
-    path: '/actuator/health',
-    methods: ['GET'],
-    allow: PUBLIC,
-    description: 'Healthcheck',
-  },
-  {
-    path: '/swagger-ui/**',
-    methods: ['GET'],
-    allow: PUBLIC,
-    description: 'Documentacao',
-  },
-  {
-    path: '/v3/api-docs/**',
-    methods: ['GET'],
-    allow: PUBLIC,
-    description: 'Documentacao',
-  },
-  {
-    // Rotas do cliente final: consulta da OS por numero, aprovacao e rejeicao
-    // de orcamento. O cliente nunca autentica (ADR-0001).
+    // Rotas do cliente final no orders: consulta da OS por numero, aprovacao e
+    // rejeicao de orcamento. O cliente nunca autentica aqui (ADR-0001); o
+    // token de aprovacao e validado pelo proprio orders.
     path: '/mechanical-hub/service-orders/**',
     methods: '*',
     allow: PUBLIC,
     description: 'Rotas do cliente final',
   },
+  {
+    // Notificacao do Mercado Pago. A assinatura (x-signature) e validada pelo
+    // billing, que responde 401 quando ela nao confere.
+    path: '/webhooks/payment',
+    methods: ['POST'],
+    allow: PUBLIC,
+    description: 'Webhook de pagamento',
+  },
 
   // --- Exclusivas do administrador ----------------------------------------
-  // O cadastro de funcionario e POST /users/register na aplicacao, ja coberto por
-  // /users/** — nao existe /auth/register.
-  { path: '/users/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Gestao de funcionarios' },
-  { path: '/users', methods: '*', allow: ['ADMINISTRATOR'], description: 'Gestao de funcionarios' },
-  { path: '/customers/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Clientes' },
-  { path: '/vehicles/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Veiculos' },
-  { path: '/services/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Servicos' },
-  { path: '/materials/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Materiais' },
+  {
+    // Endpoint opcional do orchestrator, so exposto no gateway quando existe.
+    path: '/transaction/*',
+    methods: ['GET'],
+    allow: ['ADMINISTRATOR'],
+    description: 'Transacao da saga',
+  },
+  // /stock/** tambem casa /stock (GET /stock: saldo por material).
   { path: '/stock/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Estoque' },
-  { path: '/reports/**', methods: '*', allow: ['ADMINISTRATOR'], description: 'Relatorios' },
 
   // --- Mecanico e administrador -------------------------------------------
+  // /orders/** tambem casa /orders.
   {
-    path: '/service-orders/**',
+    path: '/orders/**',
     methods: '*',
     allow: ['MECHANICAL', 'ADMINISTRATOR'],
     description: 'Ordens de servico',
   },
   {
-    path: '/service-orders',
-    methods: '*',
+    // Catalogo de reparos, consultado pelo mecanico ao abrir a ordem. Antes
+    // era exclusivo do administrador.
+    path: '/services',
+    methods: ['GET'],
     allow: ['MECHANICAL', 'ADMINISTRATOR'],
-    description: 'Ordens de servico',
+    description: 'Catalogo de reparos',
   },
 ];
 

@@ -95,7 +95,8 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_lambda_execution_role_arn: ${{ secrets.LAB_ROLE_ARN }}
-          # Rede e endpoint do banco vem dos states remotos (ADR-0002), nao de
+          # Rede, URLs dos servicos (app_backend_base_urls) e banco do orders
+          # (auth_database) vem dos states remotos (ADR-0002), nao de
           # secrets preenchidos a mao.
           TF_VAR_infra_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
           TF_VAR_database_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
@@ -104,10 +105,12 @@ jobs:
         run: terraform plan -input=false -out=tfplan
 
       - name: Terraform apply
+        id: apply
         working-directory: ${{ env.TF_DIR }}
         env:
           TF_VAR_lambda_execution_role_arn: ${{ secrets.LAB_ROLE_ARN }}
-          # Rede e endpoint do banco vem dos states remotos (ADR-0002), nao de
+          # Rede, URLs dos servicos (app_backend_base_urls) e banco do orders
+          # (auth_database) vem dos states remotos (ADR-0002), nao de
           # secrets preenchidos a mao.
           TF_VAR_infra_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
           TF_VAR_database_state_bucket: ${{ secrets.TF_STATE_BUCKET }}
@@ -115,35 +118,38 @@ jobs:
           TF_VAR_token_signing_key: ${{ secrets.TOKEN_SIGNING_KEY }}
         run: terraform apply -input=false -auto-approve tfplan
 
-      - name: Smoke test do login
-        working-directory: ${{ env.TF_DIR }}
+      - name: Smoke test
+        # Login, rota protegida com e sem token e webhook sem assinatura
+        # (401 vindo do billing). Ver scripts/smoke-test.sh. Pressupoe os 4
+        # servicos com targets saudaveis no NLB.
         env:
           SMOKE_CPF: ${{ secrets.SMOKE_TEST_CPF }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
         run: |
-          LOGIN_URL="$(terraform output -raw login_url)"
-          echo "Login: ${LOGIN_URL}"
+          API_BASE_URL="$(terraform -chdir=${{ env.TF_DIR }} output -raw api_base_url)" \
+            bash scripts/smoke-test.sh
 
-          # 1) Credencial invalida deve responder 401 (prova que a funcao subiu
-          #    e alcanca o banco -- 500 aqui indicaria falha de conexao).
-          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${LOGIN_URL}" \
-            -H 'Content-Type: application/json' \
-            -d '{"cpf":"52998224725","password":"senha-propositalmente-errada"}')
-          if [ "${status}" != "401" ] && [ "${status}" != "429" ]; then
-            echo "Esperado 401/429 para credencial invalida, recebido ${status}"
-            exit 1
-          fi
-
-          # 2) Credencial valida deve devolver token, se o secret estiver configurado.
-          if [ -n "${SMOKE_CPF}" ]; then
-            token=$(curl -s -X POST "${LOGIN_URL}" \
-              -H 'Content-Type: application/json' \
-              -d "{\"cpf\":\"${SMOKE_CPF}\",\"password\":\"${SMOKE_PASSWORD}\"}" \
-              | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
-
-            if [ -z "${token}" ]; then
-              echo "Login com credencial valida nao devolveu accessToken"
-              exit 1
-            fi
-            echo "Login validado com sucesso"
-          fi
+      - name: Publicar outputs
+        # A URL do webhook muda a cada recriacao do API Gateway (reset do Lab) e
+        # precisa ser reconfigurada a mao no painel do Mercado Pago.
+        # Roda mesmo com o smoke test falhando: a URL do webhook continua util.
+        if: ${{ !cancelled() && steps.apply.outcome == 'success' }}
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          {
+            echo "## Mechanical Hub Auth"
+            echo
+            echo "| Output | Valor |"
+            echo "|---|---|"
+            echo "| \`api_base_url\` | $(terraform output -raw api_base_url) |"
+            echo "| \`login_url\` | $(terraform output -raw login_url) |"
+            echo "| \`webhook_url\` | $(terraform output -raw webhook_url) |"
+            echo
+            echo "> Configure \`webhook_url\` no painel do Mercado Pago (notificacoes de Orders) se a API foi recriada."
+            echo
+            echo "### Backends resolvidos do mechanical-hub-infra (\`app_backend_base_urls\`)"
+            echo
+            echo '```json'
+            terraform output -json resolved_app_backend_urls
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

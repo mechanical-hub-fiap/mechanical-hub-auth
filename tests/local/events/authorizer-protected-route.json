@@ -1,7 +1,7 @@
 {
   "type": "REQUEST",
-  "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/GET/service-orders",
-  "path": "/service-orders",
+  "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/GET/orders",
+  "path": "/orders",
   "httpMethod": "GET",
   "headers": { "Authorization": "Bearer __COLOQUE_O_TOKEN_AQUI__" },
   "requestContext": { "requestId": "local-test-protected-route" }

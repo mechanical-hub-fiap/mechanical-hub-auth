@@ -8,6 +8,16 @@ output "login_url" {
   value       = "${aws_api_gateway_stage.this.invoke_url}/auth/login"
 }
 
+output "webhook_url" {
+  description = "URL de notificacao a configurar no painel do Mercado Pago. Muda a cada recriacao do API Gateway (reset do Lab): reconfigurar depois de todo apply que recriar a API."
+  value       = "${aws_api_gateway_stage.this.invoke_url}/webhooks/payment"
+}
+
+output "routes" {
+  description = "Rotas encaminhadas aos servicos (local.routes): caminho -> servico e se e publica."
+  value       = { for path, route in local.routes : "${route.method} /${path}" => { service = route.service, public = route.public } }
+}
+
 output "authenticate_function_name" {
   value = aws_lambda_function.authenticate.function_name
 }
@@ -48,9 +58,9 @@ output "resolved_database_host" {
   value       = local.database_host
 }
 
-output "resolved_app_backend_url" {
-  description = "URL do NLB interno da aplicacao, resolvida do state de mechanical-hub-infra."
-  value       = local.application_base_url
+output "resolved_app_backend_urls" {
+  description = "URLs base de cada servico no NLB interno (app_backend_base_urls), resolvidas do state de mechanical-hub-infra."
+  value       = local.app_backend_base_urls
 }
 
 # --- Observabilidade (RFC-0004, etapa 3) --------------------------------------

@@ -20,9 +20,14 @@ function depsWithValidToken(role: AccessTokenClaims['role']) {
 }
 
 describe('authorizeAccess — rotas publicas', () => {
-  it('libera sem token', async () => {
+  it.each([
+    ['/auth/login', 'POST'],
+    ['/mechanical-hub/service-orders/OS-1', 'GET'],
+    ['/mechanical-hub/service-orders/OS-1/approve', 'POST'],
+    ['/webhooks/payment', 'POST'],
+  ])('%s %s libera sem token', async (path, method) => {
     const outcome = await authorizeAccess(
-      { authorizationHeader: null, path: '/mechanical-hub/service-orders/OS-1', method: 'GET' },
+      { authorizationHeader: null, path, method },
       { tokens: new FakeTokenService(), logger: silentLogger() },
     );
 
@@ -33,7 +38,7 @@ describe('authorizeAccess — rotas publicas', () => {
 describe('authorizeAccess — token ausente ou malformado', () => {
   it('nega com 401 quando nao ha cabecalho', async () => {
     const outcome = await authorizeAccess(
-      { authorizationHeader: null, path: '/service-orders', method: 'GET' },
+      { authorizationHeader: null, path: '/orders', method: 'GET' },
       { tokens: new FakeTokenService(), logger: silentLogger() },
     );
 
@@ -42,7 +47,7 @@ describe('authorizeAccess — token ausente ou malformado', () => {
 
   it('nega com 401 quando o cabecalho nao usa Bearer', async () => {
     const outcome = await authorizeAccess(
-      { authorizationHeader: 'Basic abc', path: '/service-orders', method: 'GET' },
+      { authorizationHeader: 'Basic abc', path: '/orders', method: 'GET' },
       { tokens: new FakeTokenService(), logger: silentLogger() },
     );
 
@@ -53,7 +58,7 @@ describe('authorizeAccess — token ausente ou malformado', () => {
 describe('authorizeAccess — token invalido', () => {
   it('nega com 401 quando o token expirou', async () => {
     const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/service-orders', method: 'GET' },
+      { authorizationHeader: 'Bearer abc', path: '/orders', method: 'GET' },
       { tokens: new FakeTokenService({ valid: false, reason: 'EXPIRED' }), logger: silentLogger() },
     );
 
@@ -62,7 +67,7 @@ describe('authorizeAccess — token invalido', () => {
 
   it('nega com 401 quando a assinatura nao confere', async () => {
     const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/service-orders', method: 'GET' },
+      { authorizationHeader: 'Bearer abc', path: '/orders', method: 'GET' },
       {
         tokens: new FakeTokenService({ valid: false, reason: 'INVALID_SIGNATURE' }),
         logger: silentLogger(),
@@ -73,44 +78,49 @@ describe('authorizeAccess — token invalido', () => {
   });
 });
 
-describe('authorizeAccess — perfil', () => {
-  it('libera administrador em rota administrativa', async () => {
-    const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/customers/1', method: 'GET' },
+// Rota protegida x perfil, uma linha por rota da secao 2 da spec.
+describe('authorizeAccess — rota x perfil', () => {
+  it.each([
+    // rota, metodo, administrador, mecanico
+    ['/orders', 'POST', true, true],
+    ['/orders', 'GET', true, true],
+    ['/orders/1', 'GET', true, true],
+    ['/orders/1/repairs', 'PATCH', true, true],
+    ['/orders/1/status', 'PATCH', true, true],
+    ['/orders/status', 'POST', true, true],
+    ['/services', 'GET', true, true],
+    ['/stock', 'GET', true, false],
+    ['/stock/entry', 'POST', true, false],
+    ['/stock/1/movements', 'GET', true, false],
+    ['/transaction/1', 'GET', true, false],
+  ] as const)('%s %s', async (path, method, adminAllowed, mechanicAllowed) => {
+    const asAdmin = await authorizeAccess(
+      { authorizationHeader: 'Bearer abc', path, method },
       depsWithValidToken('ADMINISTRATOR'),
     );
-
-    expect(outcome.effect).toBe('ALLOW');
-  });
-
-  it('nega mecanico em rota administrativa com 403', async () => {
-    const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/customers/1', method: 'GET' },
+    const asMechanic = await authorizeAccess(
+      { authorizationHeader: 'Bearer abc', path, method },
       depsWithValidToken('MECHANICAL'),
     );
 
-    expect(outcome).toMatchObject({ effect: 'DENY', status: 403, reason: 'INSUFFICIENT_ROLE' });
-  });
-
-  it('libera mecanico em ordens de servico', async () => {
-    const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/service-orders/1', method: 'PATCH' },
-      depsWithValidToken('MECHANICAL'),
-    );
-
-    expect(outcome.effect).toBe('ALLOW');
+    const denied = { effect: 'DENY', status: 403, reason: 'INSUFFICIENT_ROLE' };
+    expect(asAdmin).toMatchObject(adminAllowed ? { effect: 'ALLOW' } : denied);
+    expect(asMechanic).toMatchObject(mechanicAllowed ? { effect: 'ALLOW' } : denied);
   });
 });
 
 describe('authorizeAccess — rota desconhecida', () => {
-  it('nega mesmo com token valido de administrador', async () => {
-    const outcome = await authorizeAccess(
-      { authorizationHeader: 'Bearer abc', path: '/rota-nova', method: 'GET' },
-      depsWithValidToken('ADMINISTRATOR'),
-    );
+  it.each(['/rota-nova', '/customers/1', '/service-orders', '/actuator/health'])(
+    '%s e negada mesmo com token valido de administrador',
+    async (path) => {
+      const outcome = await authorizeAccess(
+        { authorizationHeader: 'Bearer abc', path, method: 'GET' },
+        depsWithValidToken('ADMINISTRATOR'),
+      );
 
-    expect(outcome).toMatchObject({ effect: 'DENY', status: 403, reason: 'UNKNOWN_ROUTE' });
-  });
+      expect(outcome).toMatchObject({ effect: 'DENY', status: 403, reason: 'UNKNOWN_ROUTE' });
+    },
+  );
 });
 
 describe('extractBearerToken', () => {

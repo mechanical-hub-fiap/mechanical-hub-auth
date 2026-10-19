@@ -78,15 +78,20 @@ locals {
 
   subnet_ids = length(var.vpc_subnet_ids) > 0 ? var.vpc_subnet_ids : data.terraform_remote_state.infra.outputs.private_subnet_ids
 
-  # O output rds_endpoint pode vir como "host:porta" (formato do atributo
-  # `endpoint` do aws_db_instance) ou so o host (`address`). O split cobre os
-  # dois casos: sem ele, o driver do Postgres tentaria resolver "host:5432"
-  # como nome de maquina e a conexao falharia.
-  database_host = var.database_host != "" ? var.database_host : split(":", data.terraform_remote_state.database.outputs.rds_endpoint)[0]
+  # Fase 4: um RDS por servico. O login le users/profiles no banco do orders,
+  # publicado pelo mechanical-hub-database como auth_database
+  # ({ endpoint, port, db_name }), que substitui os antigos rds_*.
+  auth_database = data.terraform_remote_state.database.outputs.auth_database
 
-  database_port = var.database_port != null ? var.database_port : data.terraform_remote_state.database.outputs.rds_port
+  # O endpoint e publicado so com o host, mas o split continua cobrindo o
+  # formato "host:porta" (atributo `endpoint` do aws_db_instance): sem ele, o
+  # driver do Postgres tentaria resolver "host:5432" como nome de maquina e a
+  # conexao falharia.
+  database_host = var.database_host != "" ? var.database_host : split(":", local.auth_database.endpoint)[0]
 
-  database_name = var.database_name != "" ? var.database_name : data.terraform_remote_state.database.outputs.rds_db_name
+  database_port = var.database_port != null ? var.database_port : local.auth_database.port
+
+  database_name = var.database_name != "" ? var.database_name : local.auth_database.db_name
 
   # NLB interno da aplicacao, provisionado pelo mechanical-hub-infra
   # (modules/app-lb) -- nao pelo Kubernetes. O AWS Load Balancer Controller
@@ -95,8 +100,44 @@ locals {
   # antes da conectividade privada (era secret preenchido a mao) e sempre esta disponivel
   # assim que o mechanical-hub-infra aplica -- nao depende do deploy da
   # aplicacao ter rodado.
-  app_nlb_arn          = data.terraform_remote_state.infra.outputs.app_nlb_arn
-  application_base_url = data.terraform_remote_state.infra.outputs.app_backend_base_url
+  #
+  # Fase 4: o NLB continua um so (um VPC Link), mas com um listener por
+  # servico. app_backend_base_urls e o mapa servico -> URL base
+  # (orders, stock, billing, orchestrator), contrato da secao 3 da spec do infra.
+  app_nlb_arn           = data.terraform_remote_state.infra.outputs.app_nlb_arn
+  app_backend_base_urls = data.terraform_remote_state.infra.outputs.app_backend_base_urls
+
+  # --- Rotas encaminhadas aos servicos (Fase 4) ------------------------------
+  #
+  # Chave: caminho no API Gateway, sem barra inicial e com no maximo dois
+  # segmentos. Todos os recursos, metodos e integracoes do api-gateway.tf saem
+  # deste mapa; rota fora dele nao existe no gateway e recebe a resposta padrao
+  # dele (negacao por padrao, igual a matriz de acesso).
+  #
+  #   service         -> chave em app_backend_base_urls
+  #   method          -> metodo HTTP no gateway (ANY para os {proxy+})
+  #   public          -> true: sem autorizador; false: autorizador + x-user-*
+  #   forward_headers -> cabecalhos repassados explicitamente a integracao
+  #
+  # /mechanical-hub e /webhooks sao publicos de proposito: o cliente final se
+  # autentica pelo token de aprovacao (validado no orders) e o Mercado Pago pela
+  # assinatura x-signature (validada no billing).
+  routes = merge(
+    {
+      "mechanical-hub/{proxy+}" = { service = "orders", method = "ANY", public = true, forward_headers = [] }
+      "orders"                  = { service = "orders", method = "ANY", public = false, forward_headers = [] }
+      "orders/{proxy+}"         = { service = "orders", method = "ANY", public = false, forward_headers = [] }
+      "services"                = { service = "orders", method = "GET", public = false, forward_headers = [] }
+      "stock"                   = { service = "stock", method = "ANY", public = false, forward_headers = [] }
+      "stock/{proxy+}"          = { service = "stock", method = "ANY", public = false, forward_headers = [] }
+      "webhooks/payment"        = { service = "billing", method = "POST", public = true, forward_headers = ["x-signature", "x-request-id"] }
+    },
+    # Endpoint opcional do orquestrador (depuracao e demonstracao). So entra
+    # no gateway quando o servico de fato o expoe.
+    var.expose_orchestrator_transaction ? {
+      "transaction/{orderId}" = { service = "orchestrator", method = "GET", public = false, forward_headers = [] }
+    } : {},
+  )
 
   # Configuracao comum as duas funcoes.
   #

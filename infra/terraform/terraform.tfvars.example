@@ -23,9 +23,9 @@ database_state_bucket = "mechanical-hub-tfstate"
 #
 # vpc_id                = "vpc-0123456789abcdef0"
 # vpc_subnet_ids        = ["subnet-aaaa1111", "subnet-bbbb2222"]
-# database_host         = "mechanical-hub.abcdefghijkl.us-east-1.rds.amazonaws.com"
+# database_host         = "mechanical-hub-orders-prod.abcdefghijkl.us-east-1.rds.amazonaws.com"
 # database_port         = 5432
-# database_name         = "mechanical_hub"
+# database_name         = "mechanical_hub_orders"
 # database_egress_cidrs = ["10.0.0.0/16"]
 
 # O security group das funcoes e criado por este repositorio (ADR-0002) --
@@ -38,7 +38,11 @@ database_user = "mechanical_hub_auth"
 # database_password  -> TF_VAR_database_password
 # token_signing_key  -> TF_VAR_token_signing_key
 
-application_base_url = "http://internal-mechanical-hub-alb-1234567890.us-east-1.elb.amazonaws.com"
+# As URLs dos servicos (app_backend_base_urls) e o NLB (app_nlb_arn) vem do
+# state do mechanical-hub-infra -- nao ha variavel para informa-los.
+#
+# Endpoint opcional do orchestrator (GET /transaction/{orderId}, ADMINISTRATOR):
+# expose_orchestrator_transaction = false
 
 # --- Observabilidade (RFC-0004, etapa 3) --------------------------------------
 #

@@ -1,8 +1,8 @@
 {
   "type": "REQUEST",
-  "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/GET/customers",
-  "path": "/customers",
-  "httpMethod": "GET",
+  "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abc123/prod/POST/stock/entry",
+  "path": "/stock/entry",
+  "httpMethod": "POST",
   "headers": { "Authorization": "Bearer __COLOQUE_UM_TOKEN_DE_MECHANICAL_AQUI__" },
   "requestContext": { "requestId": "local-test-insufficient-role" }
 }

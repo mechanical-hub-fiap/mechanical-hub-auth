@@ -1,23 +1,28 @@
 # =============================================================================
 # API Gateway (REST v1)
 #
-# Desenho das rotas:
+# Desenho das rotas (Fase 4 -- um backend por servico, mesmo VPC Link):
 #
-#   /auth/login              -> funcao authenticate            (publica)
-#   /mechanical-hub/{proxy+} -> aplicacao principal            (publica, cliente final)
-#   /actuator/{proxy+}       -> aplicacao principal            (publica, operacao)
-#   /swagger-ui/{proxy+}     -> aplicacao principal            (publica, documentacao)
-#   /v3/{proxy+}             -> aplicacao principal            (publica, documentacao)
-#   /{proxy+}                -> aplicacao principal            (protegida pelo autorizador)
+#   POST /auth/login               -> funcao authenticate  (publica)
+#   ANY  /mechanical-hub/{proxy+}  -> orders               (publica, token de aprovacao no servico)
+#   POST /webhooks/payment         -> billing              (publica, assinatura validada no servico)
+#   ANY  /orders, /orders/{proxy+} -> orders               (protegida)
+#   GET  /services                 -> orders               (protegida)
+#   ANY  /stock, /stock/{proxy+}   -> stock                (protegida)
+#   GET  /transaction/{orderId}    -> orchestrator         (protegida, opcional)
 #
-# As rotas publicas ficam em recursos proprios, e nao atras do autorizador, por
-# uma limitacao concreta do API Gateway: com cache ligado, um autorizador do
-# tipo REQUEST nega a requisicao sem nem invocar a funcao quando o
-# identity_source (o cabecalho Authorization) esta ausente. Como o cliente
-# final nunca manda token, ele receberia 401 antes de qualquer logica rodar.
+# As rotas encaminhadas aos servicos sao geradas a partir de local.routes
+# (main.tf). Nao ha mais /{proxy+} generico: caminho fora do mapa nao existe no
+# gateway e recebe a resposta padrao dele -- negacao por padrao, como na matriz
+# de acesso. /actuator, /swagger-ui e /v3 tambem nao passam mais por aqui: os
+# quatro servicos teriam os mesmos caminhos. Health fica com o NLB; Swagger por
+# port-forward.
 #
-# O caminho mais especifico vence: /mechanical-hub/{proxy+} tem precedencia
-# sobre /{proxy+}.
+# As rotas publicas nao ficam atras do autorizador por uma limitacao concreta
+# do API Gateway: com cache ligado, um autorizador do tipo REQUEST nega a
+# requisicao sem nem invocar a funcao quando o identity_source (o cabecalho
+# Authorization) esta ausente. Como o cliente final e o Mercado Pago nunca
+# mandam token, receberiam 401 antes de qualquer logica rodar.
 # =============================================================================
 
 resource "aws_api_gateway_rest_api" "this" {
@@ -57,7 +62,7 @@ resource "aws_api_gateway_authorizer" "token" {
 
 resource "aws_api_gateway_vpc_link" "app" {
   name        = "${local.name_prefix}-vpc-link"
-  description = "Conectividade privada ate o NLB interno da aplicacao principal (adendo da ADR-0003)."
+  description = "Conectividade privada ate o NLB interno dos servicos (adendo da ADR-0003)."
   target_arns = [local.app_nlb_arn]
 }
 
@@ -95,109 +100,111 @@ resource "aws_api_gateway_integration" "auth_login_post" {
 }
 
 # =============================================================================
-# Rotas publicas encaminhadas para a aplicacao principal
+# Rotas encaminhadas aos servicos (geradas de local.routes)
+#
+# Todas as chaves de local.routes tem um ou dois segmentos. O primeiro segmento
+# vira um recurso filho da raiz; o segundo, quando existe, um filho dele. Um
+# prefixo com as duas formas (/orders e /orders/{proxy+}) compartilha o recurso
+# do primeiro nivel.
 # =============================================================================
 
 locals {
-  public_paths = {
-    mechanical_hub = "mechanical-hub"
-    actuator       = "actuator"
-    swagger_ui     = "swagger-ui"
-    api_docs       = "v3"
+  route_first_segments = toset([for path in keys(local.routes) : split("/", path)[0]])
+
+  route_second_segments = {
+    for path in keys(local.routes) : path => {
+      parent    = split("/", path)[0]
+      path_part = split("/", path)[1]
+    } if length(split("/", path)) == 2
+  }
+
+  route_resource_ids = merge(
+    { for segment, resource in aws_api_gateway_resource.route_first : segment => resource.id },
+    { for path, resource in aws_api_gateway_resource.route_second : path => resource.id },
+  )
+
+  # Parametro de caminho da rota ({proxy+} -> proxy, {orderId} -> orderId) e o
+  # caminho no servico com a sintaxe da integracao ({proxy+} vira {proxy}).
+  route_specs = {
+    for path, route in local.routes : path => merge(route, {
+      path_param   = try(regex("\\{(\\w+)\\+?\\}", path)[0], null)
+      backend_path = replace(path, "+}", "}")
+    })
+  }
+
+  # A identidade resolvida pelo autorizador chega aos servicos como cabecalho.
+  # E o que o filtro de gateway de cada servico consome -- assim nenhum deles
+  # precisa reabrir o token.
+  identity_headers = {
+    "integration.request.header.x-user-id"   = "context.authorizer.userId"
+    "integration.request.header.x-user-role" = "context.authorizer.role"
+    "integration.request.header.x-user-name" = "context.authorizer.name"
   }
 }
 
-resource "aws_api_gateway_resource" "public_root" {
-  for_each = local.public_paths
+resource "aws_api_gateway_resource" "route_first" {
+  for_each = local.route_first_segments
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   parent_id   = aws_api_gateway_rest_api.this.root_resource_id
   path_part   = each.value
 }
 
-resource "aws_api_gateway_resource" "public_proxy" {
-  for_each = local.public_paths
+resource "aws_api_gateway_resource" "route_second" {
+  for_each = local.route_second_segments
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  parent_id   = aws_api_gateway_resource.public_root[each.key].id
-  path_part   = "{proxy+}"
+  parent_id   = aws_api_gateway_resource.route_first[each.value.parent].id
+  path_part   = each.value.path_part
 }
 
-resource "aws_api_gateway_method" "public_any" {
-  for_each = local.public_paths
+resource "aws_api_gateway_method" "route" {
+  for_each = local.route_specs
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.public_proxy[each.key].id
-  http_method   = "ANY"
-  authorization = "NONE"
+  resource_id   = local.route_resource_ids[each.key]
+  http_method   = each.value.method
+  authorization = each.value.public ? "NONE" : "CUSTOM"
+  authorizer_id = each.value.public ? null : aws_api_gateway_authorizer.token.id
 
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
+  # Cabecalhos repassados sao opcionais (false): presenca e conteudo sao
+  # validados pelo servico -- o billing responde 401 a webhook sem x-signature.
+  request_parameters = merge(
+    each.value.path_param == null ? {} : { "method.request.path.${each.value.path_param}" = true },
+    each.value.public ? {} : { "method.request.header.Authorization" = true },
+    { for header in each.value.forward_headers : "method.request.header.${header}" => false },
+  )
 }
 
-resource "aws_api_gateway_integration" "public_any" {
-  for_each = local.public_paths
+resource "aws_api_gateway_integration" "route" {
+  for_each = local.route_specs
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.public_proxy[each.key].id
-  http_method = aws_api_gateway_method.public_any[each.key].http_method
+  resource_id = local.route_resource_ids[each.key]
+  http_method = aws_api_gateway_method.route[each.key].http_method
 
+  # HTTP_PROXY repassa o corpo sem transformacao -- requisito do webhook, cuja
+  # assinatura e conferida sobre a requisicao original.
   type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "${local.application_base_url}/${each.value}/{proxy}"
+  integration_http_method = each.value.method
+  uri                     = "${local.app_backend_base_urls[each.value.service]}/${each.value.backend_path}"
 
   connection_type = "VPC_LINK"
   connection_id   = aws_api_gateway_vpc_link.app.id
 
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
-}
+  request_parameters = merge(
+    each.value.path_param == null ? {} : {
+      "integration.request.path.${each.value.path_param}" = "method.request.path.${each.value.path_param}"
+    },
+    each.value.public ? {} : local.identity_headers,
+    { for header in each.value.forward_headers : "integration.request.header.${header}" => "method.request.header.${header}" },
+  )
 
-# =============================================================================
-# /{proxy+}  (protegida)
-# =============================================================================
-
-resource "aws_api_gateway_resource" "protected_proxy" {
-  rest_api_id = aws_api_gateway_rest_api.this.id
-  parent_id   = aws_api_gateway_rest_api.this.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "protected_any" {
-  rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.protected_proxy.id
-  http_method   = "ANY"
-  authorization = "CUSTOM"
-  authorizer_id = aws_api_gateway_authorizer.token.id
-
-  request_parameters = {
-    "method.request.path.proxy"           = true
-    "method.request.header.Authorization" = true
-  }
-}
-
-resource "aws_api_gateway_integration" "protected_any" {
-  rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.protected_proxy.id
-  http_method = aws_api_gateway_method.protected_any.http_method
-
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "${local.application_base_url}/{proxy}"
-
-  connection_type = "VPC_LINK"
-  connection_id   = aws_api_gateway_vpc_link.app.id
-
-  # A identidade resolvida pelo autorizador chega a aplicacao principal como
-  # cabecalho. E o que o GatewayAuthenticationFilter do monolito consome --
-  # assim ele nao precisa reabrir o token.
-  request_parameters = {
-    "integration.request.path.proxy"         = "method.request.path.proxy"
-    "integration.request.header.x-user-id"   = "context.authorizer.userId"
-    "integration.request.header.x-user-role" = "context.authorizer.role"
-    "integration.request.header.x-user-name" = "context.authorizer.name"
+  lifecycle {
+    precondition {
+      condition     = contains(keys(local.app_backend_base_urls), each.value.service)
+      error_message = "O servico \"${each.value.service}\" da rota /${each.key} nao esta em app_backend_base_urls do state do mechanical-hub-infra."
+    }
   }
 }
 
@@ -234,12 +241,14 @@ resource "aws_api_gateway_deployment" "this" {
       aws_api_gateway_resource.auth_login.id,
       aws_api_gateway_method.auth_login_post.id,
       aws_api_gateway_integration.auth_login_post.id,
-      aws_api_gateway_resource.protected_proxy.id,
-      aws_api_gateway_method.protected_any.id,
-      aws_api_gateway_integration.protected_any.id,
       aws_api_gateway_authorizer.token.id,
       aws_api_gateway_vpc_link.app.id,
-      values(aws_api_gateway_integration.public_any)[*].id,
+      # Objetos inteiros, e nao so ids: mudar a uri, os cabecalhos repassados ou
+      # o autorizador de uma rota mantem o id e, sem isto, nao republicaria.
+      aws_api_gateway_resource.route_first,
+      aws_api_gateway_resource.route_second,
+      aws_api_gateway_method.route,
+      aws_api_gateway_integration.route,
     ]))
   }
 
@@ -256,7 +265,7 @@ resource "aws_api_gateway_stage" "this" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   deployment_id = aws_api_gateway_deployment.this.id
   stage_name    = var.environment
-  depends_on = [aws_api_gateway_account.this]
+  depends_on    = [aws_api_gateway_account.this]
 
   # `integrationLatency` separado de `responseLatency` responde a primeira
   # pergunta de toda reclamacao de lentidao: demorou no backend ou no Gateway?

@@ -63,6 +63,14 @@ variable "state_region" {
   default     = ""
 }
 
+# --- Rotas --------------------------------------------------------------------
+
+variable "expose_orchestrator_transaction" {
+  description = "Expoe GET /transaction/{orderId} do orchestrator no API Gateway (somente ADMINISTRATOR). Ligar apenas quando o endpoint opcional existir no servico."
+  type        = bool
+  default     = false
+}
+
 # --- Rede ---------------------------------------------------------------------
 #
 # Overrides opcionais. Vazio = resolve pelo state remoto (comportamento padrao).
@@ -98,25 +106,25 @@ variable "allow_https_egress" {
 # Mesmo padrao: vazio/null resolve pelo state do mechanical-hub-database.
 
 variable "database_host" {
-  description = "Override do endpoint do banco. Vazio le rds_endpoint do state do mechanical-hub-database. Sem RDS Proxy no lab; a conexao e direta."
+  description = "Override do endpoint do banco. Vazio le auth_database.endpoint do state do mechanical-hub-database (RDS do orders). Sem RDS Proxy no lab; a conexao e direta."
   type        = string
   default     = ""
 }
 
 variable "database_port" {
-  description = "Override da porta do banco. null le rds_port do state do mechanical-hub-database."
+  description = "Override da porta do banco. null le auth_database.port do state do mechanical-hub-database."
   type        = number
   default     = null
 }
 
 variable "database_name" {
-  description = "Override do nome do banco. Vazio le rds_db_name do state do mechanical-hub-database."
+  description = "Override do nome do banco. Vazio le auth_database.db_name do state do mechanical-hub-database."
   type        = string
   default     = ""
 }
 
 variable "database_user" {
-  description = "Usuario de banco dedicado a autenticacao, somente leitura. A role e criada pelo repositorio mechanical-hub-database (sql/auth-database-role.sql), conforme ADR-0002."
+  description = "Usuario de banco dedicado a autenticacao, somente leitura. A role (LOGIN + CONNECT) e criada pelo mechanical-hub-database (sql/auth-database-role.sql); o GRANT SELECT em users/profiles vem das migrations do orders."
   type        = string
   default     = "mechanical_hub_auth"
 }
