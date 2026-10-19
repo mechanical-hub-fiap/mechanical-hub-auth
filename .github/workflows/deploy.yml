@@ -61,6 +61,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: mechanical-hub-fiap/mechanical-hub-auth
+          ref: main
 
       - uses: actions/setup-node@v4
         with:
@@ -85,7 +88,12 @@ jobs:
     needs: build
 
     steps:
+      # Em workflow_call o checkout padrao pega o repo CHAMADOR (mechanical-hub-infra);
+      # o repositorio precisa ser explicito para rodar o codigo deste repo.
       - uses: actions/checkout@v4
+        with:
+          repository: mechanical-hub-fiap/mechanical-hub-auth
+          ref: main
 
       - uses: actions/download-artifact@v4
         with:
