@@ -47,11 +47,30 @@ confere() {
   done
 
   echo "FALHA ${nome}: esperado $*, recebido ${recebido}"
+  # {"message":"Internal server error"} sozinho = erro do proprio gateway
+  # (VPC Link/NLB/target); outro corpo = resposta do servico.
+  echo "      corpo: $(corpo_de "${resposta:-}" | head -c 500)"
   falhas=$((falhas + 1))
   return 1
 }
 
 echo "API: ${API}"
+
+# Logo apos o apply, o deployment novo e o caminho VPC Link -> NLB levam alguns
+# minutos para estabilizar e respondem 500 transitorio (sem nenhum log nos
+# servicos). Espera a rota publica do billing sair de 5xx antes de verificar.
+aquecimento_limite=$((SECONDS + ${SMOKE_WARMUP_SECONDS:-300}))
+while :; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "${API}/webhooks/payment" \
+    -H 'Content-Type: application/json' -d '{"type":"order","data":{"id":"smoke-warmup"}}')
+  case "${status}" in 5??|000) ;; *) echo "gateway estavel (webhook: ${status})"; break ;; esac
+  if [ "${SECONDS}" -ge "${aquecimento_limite}" ]; then
+    echo "gateway ainda respondendo ${status} apos o aquecimento; seguindo com as verificacoes"
+    break
+  fi
+  echo "aguardando o gateway estabilizar (webhook: ${status})..."
+  sleep 10
+done
 
 # 1) Credencial invalida. 500 aqui indicaria falha de conexao com o banco.
 resposta=$(chamada -X POST "${API}/auth/login" \
