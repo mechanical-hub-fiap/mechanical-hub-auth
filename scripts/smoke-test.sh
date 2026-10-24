@@ -33,6 +33,19 @@ chamada() {
 }
 
 status_de() { printf '%s' "${1##*$'\n'}"; }
+
+chamada_estavel() {
+  local limite=$((SECONDS + ${SMOKE_RETRY_SECONDS:-120})) r s
+  while :; do
+    r=$(chamada "$@")
+    s="$(status_de "${r}")"
+    case "${s}" in 5??|000) ;; *) break ;; esac
+    [ "${SECONDS}" -ge "${limite}" ] && break
+    echo "      ${s} transitorio, nova tentativa em 10 s..." >&2
+    sleep 10
+  done
+  printf '%s' "${r}"
+}
 corpo_de() { printf '%s' "${1%$'\n'*}"; }
 
 confere() {
@@ -95,7 +108,7 @@ if [ -n "${SMOKE_CPF}" ]; then
   fi
 
   if [ -n "${token}" ]; then
-    resposta=$(chamada -X GET "${API}/orders" -H "Authorization: Bearer ${token}")
+    resposta=$(chamada_estavel -X GET "${API}/orders" -H "Authorization: Bearer ${token}")
     confere "GET /orders com token" "$(status_de "${resposta}")" 200
   else
     echo "FALHA GET /orders com token: sem token valido para testar"
